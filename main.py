@@ -378,7 +378,6 @@ class MovieRecapApp(tk.Tk):
         self.player = InAppVideoPlayer(bottom)
         self.player.pack(fill="x", pady=(4, 10))
 
-        # Policy-Safe Facebook Caption Box (No Inauthentic Engagement Bait)
         cap_header = ttk.Frame(bottom)
         cap_header.pack(fill="x", pady=(2, 4))
         ttk.Label(cap_header, text="📢 Facebook Policy-Safe Caption & Hashtags (No Engagement Bait):", foreground="#38bdf8", font=("Segoe UI", 10, "bold")).pack(side="left")
@@ -405,12 +404,11 @@ class MovieRecapApp(tk.Tk):
         )
         self.log_box.pack(fill="both", expand=True)
 
-    # ---------------- MAIN TAB: FB URL OR LOCAL FILE -> POLICY-SAFE VIDEO ----------------
+    # ---------------- MAIN TAB ----------------
     def _build_main_processor(self):
         f = self.tab2
         ttk.Label(f, text="1. Facebook Video URL or Downloaded File -> Auto Logo Remove + Copyright-Safe Audio + Policy Shield", style="Header.TLabel").pack(anchor="w", pady=(8, 10))
 
-        # Option A: Facebook URL
         r_url = ttk.Frame(f)
         r_url.pack(fill="x", pady=4)
         ttk.Label(r_url, text="Facebook Video URL:", width=19).pack(side="left")
@@ -418,7 +416,6 @@ class MovieRecapApp(tk.Tk):
         tk.Entry(r_url, textvariable=self.s2_url, bg="#27272a", fg="#38bdf8", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
         tk.Button(r_url, text="📋 Paste URL", bg="#4f46e5", fg="white", font=("Segoe UI", 8, "bold"), relief="flat", padx=10, command=self._paste_url).pack(side="right")
 
-        # Option B: Downloaded Video File
         r1 = ttk.Frame(f)
         r1.pack(fill="x", pady=4)
         ttk.Label(r1, text="OR Local Video File:", width=19).pack(side="left")
@@ -426,7 +423,6 @@ class MovieRecapApp(tk.Tk):
         tk.Entry(r1, textvariable=self.s2_src, bg="#27272a", fg="white", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
         tk.Button(r1, text="Browse Video", bg="#3f3f46", fg="white", relief="flat", padx=10, command=self._browse_split_file).pack(side="right")
 
-        # Output Folder
         r_out = ttk.Frame(f)
         r_out.pack(fill="x", pady=4)
         ttk.Label(r_out, text="Output Folder:", width=19).pack(side="left")
@@ -435,7 +431,6 @@ class MovieRecapApp(tk.Tk):
         tk.Button(r_out, text="Choose Folder", bg="#3f3f46", fg="white", relief="flat", padx=10, command=self._browse_recap_out).pack(side="right", padx=(0, 4))
         tk.Button(r_out, text="Open Folder", bg="#16a34a", fg="white", relief="flat", padx=10, command=self._open_recap_folder).pack(side="right")
 
-        # Audio Copyright-Bypass & Volume Boost
         r3 = ttk.Frame(f)
         r3.pack(fill="x", pady=6)
         ttk.Label(r3, text="Audio Protection:", width=19).pack(side="left")
@@ -453,7 +448,6 @@ class MovieRecapApp(tk.Tk):
         self.s2_audio_vol_lbl = ttk.Label(r3, text="140%", width=5, foreground="#34d399", font=("Segoe UI", 9, "bold"))
         self.s2_audio_vol_lbl.pack(side="left")
 
-        # Output Size & Watermark
         r4 = ttk.Frame(f)
         r4.pack(fill="x", pady=6)
         ttk.Label(r4, text="Output Size:", width=19).pack(side="left")
@@ -473,7 +467,6 @@ class MovieRecapApp(tk.Tk):
         self.s2_wm_pos = tk.StringVar(value="Top-Right")
         ttk.Combobox(r_wm2, textvariable=self.s2_wm_pos, values=WM_POSITIONS, state="readonly", width=12).pack(side="left", padx=(0, 14))
 
-        # Policy Shield Checkboxes
         r_fb = ttk.Frame(f)
         r_fb.pack(fill="x", pady=6)
         self.s2_auto_logo = tk.BooleanVar(value=True)
@@ -831,11 +824,9 @@ class MovieRecapApp(tk.Tk):
                 target_size = size_choice if size_choice else (info["width"] - info["width"] % 2, info["height"] - info["height"] % 2)
                 tw, th = target_size
 
-                # 1. Auto-detect & erase static logos/watermarks
                 delogo_cmds = detect_static_logos(src, log=self.log) if auto_logo else []
                 self.set_progress(0.32)
 
-                # 2. Generate Moving Watermark ASS script
                 ass_path = os.path.join(workdir, "watermark.ass")
                 write_watermark_ass(ass_path, tw, th, in_dur, watermark_text=wm_text, wm_pos=wm_pos, wm_motion=wm_motion)
 

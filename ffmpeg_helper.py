@@ -279,17 +279,6 @@ def transform_video_policy_safe(
     audio_volume_pct=135,
     on_progress=None, cancelled=None, bitrate="192k"
 ):
-    """
-    Single-Pass Facebook Policy-Safe Re-Creator:
-    1. Auto-removes original static logos/watermarks (delogo).
-    2. Applies Facebook Unoriginal Content Policy Shield:
-       - Transformative Blur-Frame Canvas (90% crisp foreground + blurred ambient background)
-       - Color/contrast/saturation fingerprint shift + subtle speed adjustment (1.02x)
-       - Complete metadata stripping (-map_metadata -1)
-    3. Transforms original audio against Facebook Copyright / ContentID:
-       - Pitch & formant shift + micro-tempo shift + EQ frequency reshaping + stereo phase width + dynaudnorm
-    4. Burns user's custom Moving Watermark.
-    """
     tw, th = target_size
     total_dur = max(0.5, info["duration"])
     escaped_ass = ass_path.replace("\\", "/").replace(":", "\\:")
@@ -301,7 +290,6 @@ def transform_video_policy_safe(
     if mirror_video:
         v_steps.append("hflip")
 
-    # Subtle 1.02x speed shift alters frame hashes without noticeable speed change
     speed_factor = 1.02 if fb_shield else 1.0
     v_steps.append(f"setpts=PTS/{speed_factor:.4f}")
     prefix = ",".join(v_steps) + ","
@@ -327,7 +315,6 @@ def transform_video_policy_safe(
             f"ass='{escaped_ass}',format=yuv420p[vout]"
         )
 
-    # Audio Copyright-Bypass Chain: shifts pitch/formant + tempo + EQ + stereo image so ContentID cannot match
     vol_gain = round(max(0.5, audio_volume_pct / 100.0), 2)
     tempo_comp = round(speed_factor / audio_pitch_shift, 4)
     af = (

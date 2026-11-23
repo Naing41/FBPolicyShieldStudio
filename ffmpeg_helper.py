@@ -132,8 +132,8 @@ def split_video_range(src_path, out_dir, start_sec, end_sec, chunk_sec, start_nu
 
 def detect_static_logos(video_path, log=None):
     """
-    Automatically scans frames across the video to detect static watermarks/logos
-    in any corner and returns FFmpeg delogo filters to erase them cleanly.
+    Scans frames across the video to detect static watermarks/logos anywhere along
+    the top, bottom, or left/right outer edges (including small mid-edge channel badges).
     """
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -143,7 +143,7 @@ def detect_static_logos(video_path, log=None):
         cap.release()
         return []
 
-    sample_indices = np.linspace(int(total * 0.05), int(total * 0.90), 14, dtype=int)
+    sample_indices = np.linspace(int(total * 0.05), int(total * 0.92), 20, dtype=int)
     edge_acc = np.zeros((h, w), dtype=np.float32)
     valid = 0
 
@@ -153,7 +153,7 @@ def detect_static_logos(video_path, log=None):
         if not ok:
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 90, 200).astype(np.float32) / 255.0
+        edges = cv2.Canny(gray, 75, 180).astype(np.float32) / 255.0
         edge_acc += edges
         valid += 1
     cap.release()
@@ -161,8 +161,8 @@ def detect_static_logos(video_path, log=None):
     if valid < 5:
         return []
 
-    persistent = (edge_acc / valid >= 0.65).astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (19, 13))
+    persistent = (edge_acc / valid >= 0.55).astype(np.uint8) * 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 15))
     closed = cv2.morphologyEx(persistent, cv2.MORPH_CLOSE, kernel)
 
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -170,14 +170,16 @@ def detect_static_logos(video_path, log=None):
 
     for cnt in contours:
         x, y, bw, bh = cv2.boundingRect(cnt)
-        if bw < 26 or bh < 12 or bw > w * 0.45 or bh > h * 0.24:
-            continue
-        in_top = y < h * 0.30
-        in_bottom = (y + bh) > h * 0.76
-        if not (in_top or in_bottom):
+        if bw < 14 or bh < 12 or bw > w * 0.45 or bh > h * 0.25:
             continue
 
-        pad = 8
+        # Target top/bottom bands OR left/right side margins (catches mid-left badges like y=32%)
+        in_top_bot = (y < h * 0.28) or ((y + bh) > h * 0.78)
+        in_side_margin = (x < w * 0.24) or ((x + bw) > w * 0.76)
+        if not (in_top_bot or in_side_margin):
+            continue
+
+        pad = 10
         x1 = max(2, x - pad)
         y1 = max(2, y - pad)
         x2 = min(w - 2, x + bw + pad)
@@ -191,8 +193,77 @@ def detect_static_logos(video_path, log=None):
         if delogo_cmds:
             log(f"🔍 Auto-Detected {len(delogo_cmds)} static logo/watermark zone(s) -> Removing automatically!")
         else:
-            log("🔍 No fixed corner logo detected.")
+            log("🔍 No fixed edge logo detected.")
     return delogo_cmds
+
+
+def detect_subtitle_band(video_path, log=None):
+    """
+    Detects burned-in subtitle/caption bars in the lower half of the video
+    and returns (y_frac, h_frac) for boxblur removal, or None if none found.
+    """
+    cap = cv2.VideoCapture(video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if total < 10 or w == 0 or h == 0:
+        cap.release()
+        return None
+
+    sample_indices = np.linspace(int(total * 0.08), int(total * 0.92), 18, dtype=int)
+    x0, x1 = int(w * 0.12), int(w * 0.88)
+    y_start = int(h * 0.48)
+    y_end = int(h * 0.92)
+
+    row_scores = np.zeros(y_end - y_start, dtype=np.float32)
+    valid = 0
+
+    for idx in sample_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        roi = frame[y_start:y_end, x0:x1]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        grad_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+        row_scores += grad_x.mean(axis=1)
+        valid += 1
+    cap.release()
+
+    if valid < 6:
+        return None
+
+    row_scores /= float(valid)
+    k = max(5, int(h * 0.025))
+    smoothed = np.convolve(row_scores, np.ones(k) / k, mode="same")
+
+    peak_idx = int(np.argmax(smoothed))
+    peak_val = float(smoothed[peak_idx])
+    median_val = float(np.median(smoothed))
+
+    if peak_val < median_val * 1.32:
+        return None
+
+    thresh = median_val + (peak_val - median_val) * 0.38
+    top_idx = peak_idx
+    while top_idx > 0 and smoothed[top_idx] > thresh:
+        top_idx -= 1
+    bot_idx = peak_idx
+    while bot_idx < len(smoothed) - 1 and smoothed[bot_idx] > thresh:
+        bot_idx += 1
+
+    abs_top = y_start + top_idx
+    abs_bot = y_start + bot_idx
+    pad_px = int(h * 0.03)
+
+    y_frac = max(0.45, min(0.84, (abs_top - pad_px) / float(h)))
+    h_frac = max(0.10, min(0.28, (abs_bot - abs_top + pad_px * 2) / float(h)))
+    if y_frac + h_frac > 0.96:
+        h_frac = 0.96 - y_frac
+
+    if log:
+        log(f"🧹 Auto-Detected burned-in subtitle bar (Top={int(y_frac*100)}%, H={int(h_frac*100)}%) -> Blurring out!")
+    return y_frac, h_frac
 
 
 def extract_preview_wav(video_path, out_wav):
@@ -286,6 +357,15 @@ def transform_video_policy_safe(
     v_steps = []
     if delogo_cmds:
         v_steps.extend(delogo_cmds)
+        # Also auto-blur any detected burned-in subtitle bar when logo/watermark removal is active
+        sub_band = detect_subtitle_band(source)
+        if sub_band:
+            y_frac, h_frac = sub_band
+            v_steps.append(
+                f"split[b0][s0];"
+                f"[s0]crop=iw*0.92:ih*{h_frac:.3f}:iw*0.04:ih*{y_frac:.3f},boxblur=22:3[bl];"
+                f"[b0][bl]overlay=W*0.04:H*{y_frac:.3f}"
+            )
 
     if mirror_video:
         v_steps.append("hflip")

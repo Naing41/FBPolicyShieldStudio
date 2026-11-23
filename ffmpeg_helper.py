@@ -132,8 +132,8 @@ def split_video_range(src_path, out_dir, start_sec, end_sec, chunk_sec, start_nu
 
 def detect_static_logos(video_path, log=None):
     """
-    Scans frames across the video to detect static watermarks/logos anywhere along
-    the top, bottom, or left/right outer edges (including small mid-edge channel badges).
+    Detects static and pulsing corner/edge logos (such as the mid-left 'TRENDS' badge)
+    using combined temporal stability + edge persistence, plus a mid-left edge fallback.
     """
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -143,9 +143,9 @@ def detect_static_logos(video_path, log=None):
         cap.release()
         return []
 
-    sample_indices = np.linspace(int(total * 0.05), int(total * 0.92), 20, dtype=int)
+    sample_indices = np.linspace(int(total * 0.04), int(total * 0.94), 24, dtype=int)
+    gray_stack = []
     edge_acc = np.zeros((h, w), dtype=np.float32)
-    valid = 0
 
     for idx in sample_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
@@ -153,47 +153,60 @@ def detect_static_logos(video_path, log=None):
         if not ok:
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 75, 180).astype(np.float32) / 255.0
+        gray_stack.append(gray.astype(np.float32))
+        edges = cv2.Canny(gray, 60, 160).astype(np.float32) / 255.0
         edge_acc += edges
-        valid += 1
     cap.release()
 
-    if valid < 5:
-        return []
-
-    persistent = (edge_acc / valid >= 0.55).astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 15))
-    closed = cv2.morphologyEx(persistent, cv2.MORPH_CLOSE, kernel)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid = len(gray_stack)
     delogo_cmds = []
+    covered_mid_left = False
 
-    for cnt in contours:
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        if bw < 14 or bh < 12 or bw > w * 0.45 or bh > h * 0.25:
-            continue
+    if valid >= 5:
+        stack_arr = np.stack(gray_stack, axis=0)
+        temporal_std = np.std(stack_arr, axis=0)
+        edge_prob = edge_acc / float(valid)
 
-        # Target top/bottom bands OR left/right side margins (catches mid-left badges like y=32%)
-        in_top_bot = (y < h * 0.28) or ((y + bh) > h * 0.78)
-        in_side_margin = (x < w * 0.24) or ((x + bw) > w * 0.76)
-        if not (in_top_bot or in_side_margin):
-            continue
+        # Catch either persistent edges (>= 42% frames) OR low-variance static overlays with local contrast
+        static_mask = ((edge_prob >= 0.42) | ((temporal_std < 14.0) & (edge_prob >= 0.25))).astype(np.uint8) * 255
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 19))
+        closed = cv2.morphologyEx(static_mask, cv2.MORPH_CLOSE, kernel)
 
-        pad = 10
-        x1 = max(2, x - pad)
-        y1 = max(2, y - pad)
-        x2 = min(w - 2, x + bw + pad)
-        y2 = min(h - 2, y + bh + pad)
-        fw = x2 - x1
-        fh = y2 - y1
-        if fw > 10 and fh > 10:
-            delogo_cmds.append(f"delogo=x={x1}:y={y1}:w={fw}:h={fh}:show=0")
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for cnt in contours:
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            if bw < 12 or bh < 10 or bw > w * 0.45 or bh > h * 0.28:
+                continue
+
+            in_top_bot = (y < h * 0.30) or ((y + bh) > h * 0.78)
+            in_side_margin = (x < w * 0.26) or ((x + bw) > w * 0.74)
+            if not (in_top_bot or in_side_margin):
+                continue
+
+            pad = 12
+            x1 = max(2, x - pad)
+            y1 = max(2, y - pad)
+            x2 = min(w - 2, x + bw + pad)
+            y2 = min(h - 2, y + bh + pad)
+            fw = x2 - x1
+            fh = y2 - y1
+            if fw > 10 and fh > 10:
+                delogo_cmds.append(f"delogo=x={x1}:y={y1}:w={fw}:h={fh}:show=0")
+                if x1 < w * 0.18 and y1 < h * 0.55 and y2 > h * 0.30:
+                    covered_mid_left = True
+
+    # Fallback coverage for mid-left channel badges (like TRENDS) if not already covered
+    if not covered_mid_left and w >= 120 and h >= 120:
+        fx = max(2, int(w * 0.015))
+        fy = max(2, int(h * 0.32))
+        fw = max(20, int(w * 0.16))
+        fh = max(20, int(h * 0.18))
+        if fx + fw < w - 2 and fy + fh < h - 2:
+            delogo_cmds.append(f"delogo=x={fx}:y={fy}:w={fw}:h={fh}:show=0")
 
     if log:
-        if delogo_cmds:
-            log(f"🔍 Auto-Detected {len(delogo_cmds)} static logo/watermark zone(s) -> Removing automatically!")
-        else:
-            log("🔍 No fixed edge logo detected.")
+        log(f"🔍 Auto-Detected & Erasing {len(delogo_cmds)} logo/watermark zone(s)!")
     return delogo_cmds
 
 
@@ -241,10 +254,10 @@ def detect_subtitle_band(video_path, log=None):
     peak_val = float(smoothed[peak_idx])
     median_val = float(np.median(smoothed))
 
-    if peak_val < median_val * 1.32:
+    if peak_val < median_val * 1.28:
         return None
 
-    thresh = median_val + (peak_val - median_val) * 0.38
+    thresh = median_val + (peak_val - median_val) * 0.35
     top_idx = peak_idx
     while top_idx > 0 and smoothed[top_idx] > thresh:
         top_idx -= 1
@@ -254,10 +267,10 @@ def detect_subtitle_band(video_path, log=None):
 
     abs_top = y_start + top_idx
     abs_bot = y_start + bot_idx
-    pad_px = int(h * 0.03)
+    pad_px = int(h * 0.035)
 
     y_frac = max(0.45, min(0.84, (abs_top - pad_px) / float(h)))
-    h_frac = max(0.10, min(0.28, (abs_bot - abs_top + pad_px * 2) / float(h)))
+    h_frac = max(0.10, min(0.30, (abs_bot - abs_top + pad_px * 2) / float(h)))
     if y_frac + h_frac > 0.96:
         h_frac = 0.96 - y_frac
 
@@ -357,13 +370,12 @@ def transform_video_policy_safe(
     v_steps = []
     if delogo_cmds:
         v_steps.extend(delogo_cmds)
-        # Also auto-blur any detected burned-in subtitle bar when logo/watermark removal is active
         sub_band = detect_subtitle_band(source)
         if sub_band:
             y_frac, h_frac = sub_band
             v_steps.append(
                 f"split[b0][s0];"
-                f"[s0]crop=iw*0.92:ih*{h_frac:.3f}:iw*0.04:ih*{y_frac:.3f},boxblur=22:3[bl];"
+                f"[s0]crop=iw*0.92:ih*{h_frac:.3f}:iw*0.04:ih*{y_frac:.3f},boxblur=24:3[bl];"
                 f"[b0][bl]overlay=W*0.04:H*{y_frac:.3f}"
             )
 

@@ -8,12 +8,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
-from PIL import Image, ImageTk
+from PIL import Image, ImageFilter, ImageTk
 
 from ffmpeg_helper import (
     Stopped,
     check_ffmpeg,
-    detect_static_logos,
     download_facebook_video,
     extract_preview_wav,
     probe,
@@ -112,7 +111,12 @@ class WinMCIPlayer:
             self.loaded = False
 
 
-class InAppVideoPlayer(ttk.Frame):
+class InteractiveLogoBlurPlayer(ttk.Frame):
+    """
+    Video Preview Player with Interactive Mouse Drag & Resize Rectangular Logo Blur Boxes.
+    Users can drag boxes over small logos (keeping subtitles untouched) and resize corners freely.
+    """
+
     def __init__(self, parent):
         super().__init__(parent)
         self.video_path = ""
@@ -127,19 +131,68 @@ class InAppVideoPlayer(ttk.Frame):
         self._photo = None
         self.audio = WinMCIPlayer()
 
+        # Display geometry for accurate normalized coordinate mapping
+        self.canvas_w = 880
+        self.canvas_h = 340
+        self.img_x0 = 0
+        self.img_y0 = 0
+        self.disp_w = 320
+        self.disp_h = 340
+
+        # List of normalized [x1, y1, x2, y2] logo blur boxes (default covers mid-left badge)
+        self.blur_boxes = [[0.02, 0.34, 0.17, 0.49]]
+        self.active_box_idx = 0
+        self.drag_mode = None  # "move" or "resize" or "create"
+        self.drag_start_xy = (0, 0)
+        self.drag_orig_box = None
+        self.live_blur_preview = tk.BooleanVar(value=True)
+
         header = ttk.Frame(self)
         header.pack(fill="x", pady=(4, 4))
-        ttk.Label(header, text="🎬 Output Video Preview Player (အသံနှင့်အရုပ် စစ်ဆေးရန်)", foreground="#60a5fa", font=("Segoe UI", 10, "bold")).pack(side="left")
-        tk.Button(
-            header, text="📂 Load Video to Preview", bg="#3f3f46", fg="white",
-            font=("Segoe UI", 8, "bold"), relief="flat", padx=10, pady=2, command=self._browse_preview
-        ).pack(side="right")
+        ttk.Label(
+            header,
+            text="🎯 Drag & Resize Blur Box on Logo (Mouse ဖြင့် Logo ပေါ်ဆွဲတင်ပြီး အရွယ်အစားညှိပါ - စာတန်းထိုး မပျောက်ပါ)",
+            foreground="#60a5fa", font=("Segoe UI", 9, "bold")
+        ).pack(side="left")
 
-        self.screen = tk.Label(
-            self, bg="#000000", text="Generated policy-safe video will play here with transformed audio",
-            fg="#71717a", font=("Segoe UI", 10), width=64, height=16
+        btn_tools = ttk.Frame(header)
+        btn_tools.pack(side="right")
+
+        tk.Checkbutton(
+            btn_tools, text="👁 Live Blur Preview", variable=self.live_blur_preview,
+            bg="#18181b", fg="#34d399", selectcolor="#27272a", activebackground="#18181b",
+            font=("Segoe UI", 8, "bold"), command=self._redraw_current_frame
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_tools, text="➕ Add Blur Box", bg="#16a34a", fg="white",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self.add_blur_box
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            btn_tools, text="🗑 Clear Boxes", bg="#dc2626", fg="white",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self.clear_blur_boxes
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            btn_tools, text="📂 Load Video", bg="#3f3f46", fg="white",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self._browse_preview
+        ).pack(side="left")
+
+        self.screen = tk.Canvas(
+            self, bg="#09090b", width=self.canvas_w, height=self.canvas_h,
+            highlightthickness=1, highlightbackground="#27272a", cursor="crosshair"
         )
         self.screen.pack(fill="x", pady=4)
+        self.screen.create_text(
+            self.canvas_w // 2, self.canvas_h // 2,
+            text="Load a video or paste a Facebook URL -> Drag & resize the green box directly onto the logo",
+            fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
+        )
+
+        self.screen.bind("<ButtonPress-1>", self._on_mouse_down)
+        self.screen.bind("<B1-Motion>", self._on_mouse_drag)
+        self.screen.bind("<ButtonRelease-1>", self._on_mouse_up)
 
         ctrl = ttk.Frame(self)
         ctrl.pack(fill="x", pady=(2, 6))
@@ -177,6 +230,105 @@ class InAppVideoPlayer(ttk.Frame):
         self.vol_lbl = ttk.Label(ctrl, text="100%", width=5, foreground="#34d399")
         self.vol_lbl.pack(side="left")
 
+    def add_blur_box(self):
+        self.blur_boxes.append([0.04, 0.04, 0.22, 0.16])
+        self.active_box_idx = len(self.blur_boxes) - 1
+        self._redraw_current_frame()
+
+    def clear_blur_boxes(self):
+        self.blur_boxes = []
+        self.active_box_idx = -1
+        self._redraw_current_frame()
+
+    def get_normalized_boxes(self):
+        return [tuple(b) for b in self.blur_boxes if (b[2] - b[0]) > 0.01 and (b[3] - b[1]) > 0.01]
+
+    def _norm_to_canvas(self, box):
+        x1 = self.img_x0 + box[0] * self.disp_w
+        y1 = self.img_y0 + box[1] * self.disp_h
+        x2 = self.img_x0 + box[2] * self.disp_w
+        y2 = self.img_y0 + box[3] * self.disp_h
+        return x1, y1, x2, y2
+
+    def _canvas_to_norm(self, cx, cy):
+        nx = max(0.0, min(1.0, (cx - self.img_x0) / max(1.0, float(self.disp_w))))
+        ny = max(0.0, min(1.0, (cy - self.img_y0) / max(1.0, float(self.disp_h))))
+        return nx, ny
+
+    def _on_mouse_down(self, event):
+        if not self.cap:
+            return
+        mx, my = event.x, event.y
+
+        # 1. Check bottom-right resize handle of existing boxes first
+        for i in range(len(self.blur_boxes) - 1, -1, -1):
+            x1, y1, x2, y2 = self._norm_to_canvas(self.blur_boxes[i])
+            if abs(mx - x2) <= 12 and abs(my - y2) <= 12:
+                self.active_box_idx = i
+                self.drag_mode = "resize"
+                self.drag_start_xy = (mx, my)
+                self.drag_orig_box = list(self.blur_boxes[i])
+                self._draw_overlays()
+                return
+
+        # 2. Check inside existing box to move it
+        for i in range(len(self.blur_boxes) - 1, -1, -1):
+            x1, y1, x2, y2 = self._norm_to_canvas(self.blur_boxes[i])
+            if x1 <= mx <= x2 and y1 <= my <= y2:
+                self.active_box_idx = i
+                self.drag_mode = "move"
+                self.drag_start_xy = (mx, my)
+                self.drag_orig_box = list(self.blur_boxes[i])
+                self._draw_overlays()
+                return
+
+        # 3. Drag on empty area inside video frame to draw a new rectangular blur box
+        if self.img_x0 <= mx <= self.img_x0 + self.disp_w and self.img_y0 <= my <= self.img_y0 + self.disp_h:
+            nx, ny = self._canvas_to_norm(mx, my)
+            self.blur_boxes.append([nx, ny, min(1.0, nx + 0.05), min(1.0, ny + 0.05)])
+            self.active_box_idx = len(self.blur_boxes) - 1
+            self.drag_mode = "create"
+            self.drag_start_xy = (nx, ny)
+            self._draw_overlays()
+
+    def _on_mouse_drag(self, event):
+        if not self.cap or self.drag_mode is None or self.active_box_idx < 0:
+            return
+        mx, my = event.x, event.y
+
+        if self.drag_mode == "move":
+            dx = (mx - self.drag_start_xy[0]) / max(1.0, float(self.disp_w))
+            dy = (my - self.drag_start_xy[1]) / max(1.0, float(self.disp_h))
+            bw = self.drag_orig_box[2] - self.drag_orig_box[0]
+            bh = self.drag_orig_box[3] - self.drag_orig_box[1]
+            nx1 = max(0.0, min(1.0 - bw, self.drag_orig_box[0] + dx))
+            ny1 = max(0.0, min(1.0 - bh, self.drag_orig_box[1] + dy))
+            self.blur_boxes[self.active_box_idx] = [nx1, ny1, nx1 + bw, ny1 + bh]
+
+        elif self.drag_mode == "resize":
+            nx2, ny2 = self._canvas_to_norm(mx, my)
+            nx1, ny1 = self.drag_orig_box[0], self.drag_orig_box[1]
+            self.blur_boxes[self.active_box_idx] = [
+                nx1, ny1, max(nx1 + 0.025, nx2), max(ny1 + 0.025, ny2)
+            ]
+
+        elif self.drag_mode == "create":
+            sx, sy = self.drag_start_xy
+            cx, cy = self._canvas_to_norm(mx, my)
+            self.blur_boxes[self.active_box_idx] = [
+                min(sx, cx), min(sy, cy), max(sx, cx), max(sy, cy)
+            ]
+
+        if not self.is_playing:
+            self._redraw_current_frame()
+        else:
+            self._draw_overlays()
+
+    def _on_mouse_up(self, _event):
+        self.drag_mode = None
+        if not self.is_playing:
+            self._redraw_current_frame()
+
     def reset_player(self):
         self.stop()
         if self.cap:
@@ -187,17 +339,19 @@ class InAppVideoPlayer(ttk.Frame):
         self.preview_wav = ""
         self.seek_var.set(0.0)
         self.time_lbl.config(text="00:00 / 00:00")
-        self.screen.config(
-            image="", text="Generated policy-safe video will play here with transformed audio",
-            width=64, height=16
+        self.screen.delete("all")
+        self.screen.create_text(
+            self.canvas_w // 2, self.canvas_h // 2,
+            text="Load a video or paste a Facebook URL -> Drag & resize the green box directly onto the logo",
+            fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
         )
 
     def _browse_preview(self):
         p = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mkv *.mov *.avi")])
         if p:
-            self.load_video(p, autoplay=True)
+            self.load_video(p, autoplay=False)
 
-    def load_video(self, path, autoplay=True):
+    def load_video(self, path, autoplay=False):
         self.stop()
         if not os.path.isfile(path):
             return
@@ -218,9 +372,18 @@ class InAppVideoPlayer(ttk.Frame):
         except Exception:
             self.preview_wav = ""
 
-        self._show_frame_at(0.0)
+        # Jump to 10% into the video so the logo is immediately visible for dragging
+        preview_sec = min(3.0, self.duration_sec * 0.1)
+        self.play_offset_sec = preview_sec
+        self.seek_var.set(preview_sec)
+        self._show_frame_at(preview_sec)
         if autoplay:
             self.play()
+
+    def _redraw_current_frame(self):
+        if self.cap:
+            cur = time.time() - self.play_start_wall if self.is_playing else self.play_offset_sec
+            self._show_frame_at(cur)
 
     def _show_frame_at(self, sec):
         if not self.cap:
@@ -232,13 +395,51 @@ class InAppVideoPlayer(ttk.Frame):
             return
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
-        target_h = 300
-        target_w = max(160, int(w * (target_h / float(h))))
-        resized = cv2.resize(rgb, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+        cw = max(640, self.screen.winfo_width() or self.canvas_w)
+        ch = self.canvas_h
+        scale = min(cw / float(w), ch / float(h))
+        self.disp_w = max(80, int(w * scale))
+        self.disp_h = max(80, int(h * scale))
+        self.img_x0 = (cw - self.disp_w) // 2
+        self.img_y0 = (ch - self.disp_h) // 2
+
+        resized = cv2.resize(rgb, (self.disp_w, self.disp_h), interpolation=cv2.INTER_AREA)
         img = Image.fromarray(resized)
+
+        # Render live Gaussian blur inside each user-dragged box so the user sees the exact final result
+        if self.live_blur_preview.get() and self.blur_boxes:
+            for (nx1, ny1, nx2, ny2) in self.blur_boxes:
+                bx1 = max(0, min(self.disp_w - 2, int(nx1 * self.disp_w)))
+                by1 = max(0, min(self.disp_h - 2, int(ny1 * self.disp_h)))
+                bx2 = max(bx1 + 2, min(self.disp_w, int(nx2 * self.disp_w)))
+                by2 = max(by1 + 2, min(self.disp_h, int(ny2 * self.disp_h)))
+                patch = img.crop((bx1, by1, bx2, by2)).filter(ImageFilter.GaussianBlur(radius=9))
+                img.paste(patch, (bx1, by1))
+
         self._photo = ImageTk.PhotoImage(image=img)
-        self.screen.config(image=self._photo, text="", width=target_w, height=target_h)
+        self.screen.delete("all")
+        self.screen.create_image(self.img_x0, self.img_y0, anchor="nw", image=self._photo)
+        self._draw_overlays()
         self.time_lbl.config(text=f"{fmt_hms(sec)[3:]} / {fmt_hms(self.duration_sec)[3:]}")
+
+    def _draw_overlays(self):
+        self.screen.delete("overlay")
+        for i, box in enumerate(self.blur_boxes):
+            x1, y1, x2, y2 = self._norm_to_canvas(box)
+            is_active = (i == self.active_box_idx)
+            color = "#22c55e" if is_active else "#38bdf8"
+            self.screen.create_rectangle(
+                x1, y1, x2, y2, outline=color, width=2, dash=(4, 2), tags="overlay"
+            )
+            self.screen.create_text(
+                x1 + 4, max(self.img_y0 + 8, y1 - 8),
+                text=f"Blur #{i+1}", fill=color, anchor="w", font=("Segoe UI", 8, "bold"), tags="overlay"
+            )
+            # Bottom-right white resize handle
+            self.screen.create_rectangle(
+                x2 - 6, y2 - 6, x2 + 6, y2 + 6, fill="#ffffff", outline=color, width=2, tags="overlay"
+            )
 
     def play(self):
         if not self.cap or self.is_playing:
@@ -308,8 +509,8 @@ class InAppVideoPlayer(ttk.Frame):
 class MovieRecapApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Facebook Video Policy-Shield & Auto Logo Remover Studio (No AI Key Needed)")
-        self.geometry("1040x920")
+        self.title("Facebook Video Policy-Shield & Drag Logo Blur Studio")
+        self.geometry("1040x940")
         self.configure(bg="#18181b")
         self.cancel_flag = False
         self.last_split_dir = ""
@@ -355,7 +556,7 @@ class MovieRecapApp(tk.Tk):
 
         self.tab2 = ttk.Frame(nb)
         self.tab1 = ttk.Frame(nb)
-        nb.add(self.tab2, text="  Step 1: FB URL / Video Policy-Shield & Logo Remover  ")
+        nb.add(self.tab2, text="  Step 1: Drag Logo Blur & FB Policy-Shield  ")
         nb.add(self.tab1, text="  Step 2: Movie Splitter (ဇာတ်ကားပိုင်းရန်)  ")
 
         self._build_main_processor()
@@ -375,7 +576,7 @@ class MovieRecapApp(tk.Tk):
         )
         self.btn_cancel.pack(side="right")
 
-        self.player = InAppVideoPlayer(bottom)
+        self.player = InteractiveLogoBlurPlayer(bottom)
         self.player.pack(fill="x", pady=(4, 10))
 
         cap_header = ttk.Frame(bottom)
@@ -399,7 +600,7 @@ class MovieRecapApp(tk.Tk):
 
         ttk.Label(bottom, text="System Process Log:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 2))
         self.log_box = tk.Text(
-            bottom, height=8, bg="#09090b", fg="#a1a1aa", font=("Consolas", 9),
+            bottom, height=7, bg="#09090b", fg="#a1a1aa", font=("Consolas", 9),
             relief="flat", padx=8, pady=8
         )
         self.log_box.pack(fill="both", expand=True)
@@ -407,7 +608,7 @@ class MovieRecapApp(tk.Tk):
     # ---------------- MAIN TAB ----------------
     def _build_main_processor(self):
         f = self.tab2
-        ttk.Label(f, text="1. Facebook Video URL or Downloaded File -> Auto Logo Remove + Copyright-Safe Audio + Policy Shield", style="Header.TLabel").pack(anchor="w", pady=(8, 10))
+        ttk.Label(f, text="1. Load FB URL or Video -> Drag Square Blur Box onto Logo -> Download Policy-Safe Video", style="Header.TLabel").pack(anchor="w", pady=(8, 10))
 
         r_url = ttk.Frame(f)
         r_url.pack(fill="x", pady=4)
@@ -425,7 +626,7 @@ class MovieRecapApp(tk.Tk):
 
         r_out = ttk.Frame(f)
         r_out.pack(fill="x", pady=4)
-        ttk.Label(r_out, text="Output Folder:", width=19).pack(side="left")
+        ttk.Label(r_out, text="Download / Output Dir:", width=19).pack(side="left")
         self.s2_out_dir = tk.StringVar()
         tk.Entry(r_out, textvariable=self.s2_out_dir, bg="#27272a", fg="white", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
         tk.Button(r_out, text="Choose Folder", bg="#3f3f46", fg="white", relief="flat", padx=10, command=self._browse_recap_out).pack(side="right", padx=(0, 4))
@@ -469,13 +670,6 @@ class MovieRecapApp(tk.Tk):
 
         r_fb = ttk.Frame(f)
         r_fb.pack(fill="x", pady=6)
-        self.s2_auto_logo = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            r_fb, text="🔍 Auto-Detect & Remove Original Logos/Watermarks",
-            variable=self.s2_auto_logo, bg="#18181b", fg="#f472b6", selectcolor="#27272a",
-            activebackground="#18181b", activeforeground="#f9a8d4", font=("Segoe UI", 9, "bold")
-        ).pack(side="left", padx=(0, 14))
-
         self.s2_fb_shield = tk.BooleanVar(value=True)
         tk.Checkbutton(
             r_fb, text="🛡 FB Unoriginal Content & Policy Shield (Blur-Frame + Speed/Color/Hash Shift)",
@@ -490,13 +684,13 @@ class MovieRecapApp(tk.Tk):
             activebackground="#18181b", activeforeground="white", font=("Segoe UI", 9)
         ).pack(side="left")
 
-        self.s2_loc_lbl = ttk.Label(f, text="Output File Location: (Will appear here after processing)", foreground="#34d399", font=("Segoe UI", 9, "bold"))
+        self.s2_loc_lbl = ttk.Label(f, text="Output File Location: (Subtitles stay 100% visible; only your dragged box is blurred)", foreground="#34d399", font=("Segoe UI", 9, "bold"))
         self.s2_loc_lbl.pack(anchor="w", pady=(6, 6))
 
         btn_row = ttk.Frame(f)
         btn_row.pack(anchor="w", pady=(2, 6))
         tk.Button(
-            btn_row, text="⚡ Process Video (Remove Logo + Bypass Copyright + Add Watermark)",
+            btn_row, text="⚡ Process & Download Video (Apply Dragged Logo Blur + Policy Shield)",
             bg="#2563eb", fg="white", font=("Segoe UI", 10, "bold"),
             relief="flat", padx=18, pady=8, command=self._start_process
         ).pack(side="left", padx=(0, 10))
@@ -647,7 +841,7 @@ class MovieRecapApp(tk.Tk):
         self.s2_src.set("")
         self.log_box.delete("1.0", "end")
         self.s2_loc_lbl.config(text="Output File Location: (Refreshed - Ready for new Facebook URL or Video)")
-        self.log("🔄 Refreshed! Paste a Facebook URL or select a downloaded video file.")
+        self.log("🔄 Refreshed! Load a video and drag the green blur box onto the logo.")
 
     def _copy_fb_caption(self):
         txt = self.caption_box.get("1.0", "end").strip()
@@ -709,7 +903,8 @@ class MovieRecapApp(tk.Tk):
                 self.s2_out_dir.set(os.path.dirname(p))
             try:
                 info = probe(p)
-                self.log(f"Selected video: {os.path.basename(p)} (Duration: {fmt_hms(info['duration'])})")
+                self.log(f"Selected video: {os.path.basename(p)} -> Drag the green box onto the logo, then click Process!")
+                self.player.load_video(p, autoplay=False)
             except Exception:
                 pass
 
@@ -770,6 +965,7 @@ class MovieRecapApp(tk.Tk):
                 if files:
                     self.after(0, lambda: self.s2_src.set(files[0]))
                     self.after(0, lambda: self.s2_out_dir.set(out_dir))
+                    self.after(0, lambda: self.player.load_video(files[0], autoplay=False))
                 self.set_progress(1.0)
                 self.log(f"🎉 Split ပြီးပါပြီ! ဖိုင် {len(files)} ခုကို {out_dir} တွင် သိမ်းဆည်းပြီးပါပြီ။")
             except Stopped:
@@ -784,7 +980,7 @@ class MovieRecapApp(tk.Tk):
         local_src = self.s2_src.get().strip()
 
         if not fb_url and not os.path.isfile(local_src):
-            messagebox.showerror("Input Missing", "Facebook Video URL ထည့်ပါ (သို့မဟုတ်) Downloaded Video File ရွေးပေးပါ။")
+            messagebox.showerror("Input Missing", "Facebook Video URL ထည့်ပါ (သို့မဟုတ်) Local Video File ရွေးပေးပါ။")
             return
 
         self.player.stop()
@@ -793,7 +989,7 @@ class MovieRecapApp(tk.Tk):
             out_dir = os.path.dirname(local_src) if os.path.isfile(local_src) else os.path.join(os.path.expanduser("~"), "Downloads", "FB_PolicySafe_Videos")
             self.s2_out_dir.set(out_dir)
 
-        auto_logo = bool(self.s2_auto_logo.get())
+        blur_boxes = self.player.get_normalized_boxes()
         fb_shield = bool(self.s2_fb_shield.get())
         mirror_vid = bool(self.s2_mirror.get())
         pitch_shift = AUDIO_MODES[self.s2_audio_mode.get()]
@@ -813,6 +1009,8 @@ class MovieRecapApp(tk.Tk):
 
                 if fb_url:
                     src = download_facebook_video(fb_url, workdir, log=self.log)
+                    self.after(0, lambda: self.s2_src.set(src))
+                    self.after(0, lambda: self.s2_url.set(""))
                 else:
                     src = local_src
 
@@ -824,32 +1022,29 @@ class MovieRecapApp(tk.Tk):
                 target_size = size_choice if size_choice else (info["width"] - info["width"] % 2, info["height"] - info["height"] % 2)
                 tw, th = target_size
 
-                delogo_cmds = detect_static_logos(src, log=self.log) if auto_logo else []
-                self.set_progress(0.32)
-
                 ass_path = os.path.join(workdir, "watermark.ass")
                 write_watermark_ass(ass_path, tw, th, in_dur, watermark_text=wm_text, wm_pos=wm_pos, wm_motion=wm_motion)
 
                 base_name = os.path.splitext(os.path.basename(src))[0]
                 final_out = os.path.join(out_dir, f"{base_name}_FB_Safe.mp4")
 
-                self.log("🛡 Applying FB Policy Shield + Auto Logo Removal + Copyright-Safe Audio Transform...")
+                self.log(f"🎯 Blurring {len(blur_boxes)} dragged logo box(es) + keeping all subtitles untouched...")
                 transform_video_policy_safe(
                     src, ass_path, final_out, info, target_size,
-                    delogo_cmds=delogo_cmds,
+                    manual_blur_boxes=blur_boxes,
                     fb_shield=fb_shield,
                     mirror_video=mirror_vid,
                     audio_pitch_shift=pitch_shift,
                     audio_volume_pct=audio_vol,
-                    on_progress=lambda p: self.set_progress(0.32 + p * 0.67),
+                    on_progress=lambda p: self.set_progress(0.25 + p * 0.74),
                     cancelled=lambda: self.cancel_flag,
                 )
 
                 elapsed = time.time() - t_start
                 self.last_recap_file = final_out
                 self.set_progress(1.0)
-                self.after(0, lambda: self.s2_loc_lbl.config(text=f"✅ Saved FB Policy-Safe Video in {elapsed:.0f}s: {final_out}"))
-                self.log(f"✅ DONE in {elapsed:.1f}s! Playing Preview...")
+                self.after(0, lambda: self.s2_loc_lbl.config(text=f"✅ Downloaded & Saved in {elapsed:.0f}s: {final_out}"))
+                self.log(f"✅ DONE in {elapsed:.1f}s! Subtitles preserved & logo blurred.")
                 self.after(0, lambda: self.player.load_video(final_out, autoplay=True))
 
             except Stopped:

@@ -34,7 +34,7 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: Build FBPolicyShieldStudio.exe
-        run: pyinstaller --noconfirm --onefile --windowed --name "FBPolicyShieldStudio" --add-binary "ffmpeg/ffmpeg.exe;ffmpeg" --add-binary "ffmpeg/ffprobe.exe;ffmpeg" --collect-all yt_dlp --hidden-import PIL.ImageTk main.py
+        run: pyinstaller --noconfirm --onefile --windowed --name "FBPolicyShieldStudio" --add-binary "ffmpeg/ffmpeg.exe;ffmpeg" --add-binary "ffmpeg/ffprobe.exe;ffmpeg" --hidden-import PIL.ImageTk main.py
 
       - name: Upload Windows EXE Artifact
         uses: actions/upload-artifact@v4

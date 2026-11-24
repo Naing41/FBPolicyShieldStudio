@@ -45,9 +45,11 @@ def probe(path):
     if r.returncode != 0:
         raise IOError("ဗီဒီယို ဖတ်မရပါ: " + r.stderr.decode("utf-8", "replace")[-200:])
     j = json.loads(r.stdout)
-    v = next((s for s in j["streams"] if s.get("codec_type") == "video"), None)
+    streams = j.get("streams", [])
+    v = next((s for s in streams if s.get("codec_type") == "video"), None)
     if v is None:
         raise IOError("ဗီဒီယို stream မတွေ့ပါ")
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
     dur = float(j["format"].get("duration") or v.get("duration") or 0)
     if dur <= 0:
         raise IOError("ဗီဒီယို အရှည် ဖတ်မရပါ")
@@ -58,7 +60,13 @@ def probe(path):
         fps = 30.0
     if not 5 <= fps <= 120:
         fps = 30.0
-    return {"duration": dur, "width": int(v["width"]), "height": int(v["height"]), "fps": fps}
+    return {
+        "duration": dur,
+        "width": int(v["width"]),
+        "height": int(v["height"]),
+        "fps": fps,
+        "has_audio": has_audio,
+    }
 
 
 def split_video_range(src_path, out_dir, start_sec, end_sec, chunk_sec, start_num=1, log=None, cancelled=None):
@@ -175,8 +183,10 @@ def transform_video_policy_safe(
     audio_volume_pct=135,
     on_progress=None, cancelled=None, bitrate="192k"
 ):
-    tw, th = target_size
+    tw = max(16, int(target_size[0]) // 2 * 2)
+    th = max(16, int(target_size[1]) // 2 * 2)
     sw, sh = info["width"], info["height"]
+    has_audio = info.get("has_audio", True)
     total_dur = max(0.5, info["duration"])
     escaped_ass = ass_path.replace("\\", "/").replace(":", "\\:")
 
@@ -184,13 +194,15 @@ def transform_video_policy_safe(
 
     if manual_blur_boxes:
         for idx, (nx1, ny1, nx2, ny2) in enumerate(manual_blur_boxes):
-            x = max(0, min(sw - 8, int(round(nx1 * sw))))
-            y = max(0, min(sh - 8, int(round(ny1 * sh))))
-            bw = max(8, min(sw - x, int(round((nx2 - nx1) * sw))))
-            bh = max(8, min(sh - y, int(round((ny2 - ny1) * sh))))
+            x = max(0, min(sw - 12, int(round(nx1 * sw))))
+            y = max(0, min(sh - 12, int(round(ny1 * sh))))
+            bw = max(12, min(sw - x, int(round((nx2 - nx1) * sw))))
+            bh = max(12, min(sh - y, int(round((ny2 - ny1) * sh))))
+            # Clamp boxblur radius to < half of crop width/height to prevent FFmpeg Invalid argument
+            safe_rad = max(2, min(16, (bw - 2) // 2, (bh - 2) // 2))
             v_steps.append(
                 f"split[base_{idx}][crop_{idx}];"
-                f"[crop_{idx}]crop={bw}:{bh}:{x}:{y},boxblur=18:3[blur_{idx}];"
+                f"[crop_{idx}]crop={bw}:{bh}:{x}:{y},boxblur={safe_rad}:2[blur_{idx}];"
                 f"[base_{idx}][blur_{idx}]overlay={x}:{y}"
             )
 
@@ -202,13 +214,13 @@ def transform_video_policy_safe(
     prefix = ",".join(v_steps) + ","
 
     if fb_shield:
-        fw = int((tw * 0.90) // 2 * 2)
-        fh = int((th * 0.90) // 2 * 2)
+        fw = max(16, int((tw * 0.90) // 2 * 2))
+        fh = max(16, int((th * 0.90) // 2 * 2))
         vf = (
             f"[0:v]{prefix}"
             f"eq=contrast=1.04:saturation=1.07:brightness=0.01,"
             f"split[bg][fg];"
-            f"[bg]scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th},boxblur=20:3[bg_blur];"
+            f"[bg]scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th},boxblur=16:2[bg_blur];"
             f"[fg]crop=iw*0.95:ih*0.95:iw*0.025:ih*0.025,"
             f"scale={fw}:{fh}:force_original_aspect_ratio=decrease:flags=fast_bilinear[fg_scaled];"
             f"[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2,"
@@ -224,13 +236,17 @@ def transform_video_policy_safe(
 
     vol_gain = round(max(0.5, audio_volume_pct / 100.0), 2)
     tempo_comp = round(speed_factor / audio_pitch_shift, 4)
-    af = (
-        f"[0:a]aresample=44100,"
-        f"asetrate=44100*{audio_pitch_shift:.4f},aresample=44100,atempo={tempo_comp:.4f},"
-        f"equalizer=f=250:t=q:w=1:g=2,equalizer=f=3200:t=q:w=1:g=-2,"
-        f"stereotools=mlev=0.85:slev=1.15,"
-        f"dynaudnorm=f=150:g=12:p=0.92,volume={vol_gain},alimiter=limit=0.95[aout]"
-    )
+
+    if has_audio:
+        af = (
+            f"[0:a]aresample=44100,"
+            f"asetrate=44100*{audio_pitch_shift:.4f},aresample=44100,atempo={tempo_comp:.4f},"
+            f"equalizer=f=250:t=q:w=1:g=2,equalizer=f=3200:t=q:w=1:g=-2,"
+            f"stereotools=mlev=0.85:slev=1.15,"
+            f"dynaudnorm=f=150:g=12:p=0.92,volume={vol_gain},alimiter=limit=0.95[aout]"
+        )
+    else:
+        af = f"anullsrc=r=44100:cl=stereo,atrim=0:{total_dur / speed_factor:.3f}[aout]"
 
     filter_complex = vf + ";" + af
 
@@ -266,6 +282,6 @@ def transform_video_policy_safe(
             p.kill()
 
     if p.returncode != 0:
-        err_msg = p.stderr.read().decode("utf-8", "replace")[-400:]
+        err_msg = p.stderr.read().decode("utf-8", "replace")[-450:]
         raise IOError("Video ထုတ်ရာတွင် Error တက်ပါသည်: " + err_msg)
     return out_path

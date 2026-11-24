@@ -113,12 +113,13 @@ class WinMCIPlayer:
 
 class InteractiveLogoBlurPlayer(ttk.Frame):
     """
-    Video Preview Player with Interactive Mouse Drag & Resize Rectangular Logo Blur Boxes.
-    Users can drag boxes over small logos (keeping subtitles untouched) and resize corners freely.
+    Video Preview Player with Interactive Mouse Drag & Resize Rectangular Logo Blur Boxes
+    and a direct 'Download Video' button right beside the blur controls.
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, on_download_click=None):
         super().__init__(parent)
+        self.on_download_click = on_download_click
         self.video_path = ""
         self.preview_wav = ""
         self.cap = None
@@ -131,7 +132,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self._photo = None
         self.audio = WinMCIPlayer()
 
-        # Display geometry for accurate normalized coordinate mapping
         self.canvas_w = 880
         self.canvas_h = 340
         self.img_x0 = 0
@@ -139,10 +139,9 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.disp_w = 320
         self.disp_h = 340
 
-        # List of normalized [x1, y1, x2, y2] logo blur boxes (default covers mid-left badge)
         self.blur_boxes = [[0.02, 0.34, 0.17, 0.49]]
         self.active_box_idx = 0
-        self.drag_mode = None  # "move" or "resize" or "create"
+        self.drag_mode = None
         self.drag_start_xy = (0, 0)
         self.drag_orig_box = None
         self.live_blur_preview = tk.BooleanVar(value=True)
@@ -151,7 +150,7 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         header.pack(fill="x", pady=(4, 4))
         ttk.Label(
             header,
-            text="🎯 Drag & Resize Blur Box on Logo (Mouse ဖြင့် Logo ပေါ်ဆွဲတင်ပြီး အရွယ်အစားညှိပါ - စာတန်းထိုး မပျောက်ပါ)",
+            text="🎯 Drag & Resize Blur Box on Logo -> Click 'Download Video' when ready",
             foreground="#60a5fa", font=("Segoe UI", 9, "bold")
         ).pack(side="left")
 
@@ -159,24 +158,25 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         btn_tools.pack(side="right")
 
         tk.Checkbutton(
-            btn_tools, text="👁 Live Blur Preview", variable=self.live_blur_preview,
+            btn_tools, text="👁 Live Blur", variable=self.live_blur_preview,
             bg="#18181b", fg="#34d399", selectcolor="#27272a", activebackground="#18181b",
             font=("Segoe UI", 8, "bold"), command=self._redraw_current_frame
         ).pack(side="left", padx=(0, 8))
 
         tk.Button(
             btn_tools, text="➕ Add Blur Box", bg="#16a34a", fg="white",
-            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self.add_blur_box
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=3, command=self.add_blur_box
         ).pack(side="left", padx=(0, 6))
 
         tk.Button(
             btn_tools, text="🗑 Clear Boxes", bg="#dc2626", fg="white",
-            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self.clear_blur_boxes
-        ).pack(side="left", padx=(0, 6))
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=3, command=self.clear_blur_boxes
+        ).pack(side="left", padx=(0, 8))
 
         tk.Button(
-            btn_tools, text="📂 Load Video", bg="#3f3f46", fg="white",
-            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=2, command=self._browse_preview
+            btn_tools, text="💾 Download Video", bg="#2563eb", fg="white",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=3,
+            command=self._trigger_download
         ).pack(side="left")
 
         self.screen = tk.Canvas(
@@ -186,7 +186,7 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.screen.pack(fill="x", pady=4)
         self.screen.create_text(
             self.canvas_w // 2, self.canvas_h // 2,
-            text="Load a video or paste a Facebook URL -> Drag & resize the green box directly onto the logo",
+            text="Browse a video or paste a Facebook URL above -> Drag & resize the green box onto the logo -> Click 'Download Video'",
             fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
         )
 
@@ -230,6 +230,10 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.vol_lbl = ttk.Label(ctrl, text="100%", width=5, foreground="#34d399")
         self.vol_lbl.pack(side="left")
 
+    def _trigger_download(self):
+        if self.on_download_click:
+            self.on_download_click()
+
     def add_blur_box(self):
         self.blur_boxes.append([0.04, 0.04, 0.22, 0.16])
         self.active_box_idx = len(self.blur_boxes) - 1
@@ -260,7 +264,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
             return
         mx, my = event.x, event.y
 
-        # 1. Check bottom-right resize handle of existing boxes first
         for i in range(len(self.blur_boxes) - 1, -1, -1):
             x1, y1, x2, y2 = self._norm_to_canvas(self.blur_boxes[i])
             if abs(mx - x2) <= 12 and abs(my - y2) <= 12:
@@ -271,7 +274,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
                 self._draw_overlays()
                 return
 
-        # 2. Check inside existing box to move it
         for i in range(len(self.blur_boxes) - 1, -1, -1):
             x1, y1, x2, y2 = self._norm_to_canvas(self.blur_boxes[i])
             if x1 <= mx <= x2 and y1 <= my <= y2:
@@ -282,7 +284,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
                 self._draw_overlays()
                 return
 
-        # 3. Drag on empty area inside video frame to draw a new rectangular blur box
         if self.img_x0 <= mx <= self.img_x0 + self.disp_w and self.img_y0 <= my <= self.img_y0 + self.disp_h:
             nx, ny = self._canvas_to_norm(mx, my)
             self.blur_boxes.append([nx, ny, min(1.0, nx + 0.05), min(1.0, ny + 0.05)])
@@ -342,14 +343,9 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.screen.delete("all")
         self.screen.create_text(
             self.canvas_w // 2, self.canvas_h // 2,
-            text="Load a video or paste a Facebook URL -> Drag & resize the green box directly onto the logo",
+            text="Browse a video or paste a Facebook URL above -> Drag & resize the green box onto the logo -> Click 'Download Video'",
             fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
         )
-
-    def _browse_preview(self):
-        p = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mkv *.mov *.avi")])
-        if p:
-            self.load_video(p, autoplay=False)
 
     def load_video(self, path, autoplay=False):
         self.stop()
@@ -372,7 +368,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         except Exception:
             self.preview_wav = ""
 
-        # Jump to 10% into the video so the logo is immediately visible for dragging
         preview_sec = min(3.0, self.duration_sec * 0.1)
         self.play_offset_sec = preview_sec
         self.seek_var.set(preview_sec)
@@ -407,7 +402,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         resized = cv2.resize(rgb, (self.disp_w, self.disp_h), interpolation=cv2.INTER_AREA)
         img = Image.fromarray(resized)
 
-        # Render live Gaussian blur inside each user-dragged box so the user sees the exact final result
         if self.live_blur_preview.get() and self.blur_boxes:
             for (nx1, ny1, nx2, ny2) in self.blur_boxes:
                 bx1 = max(0, min(self.disp_w - 2, int(nx1 * self.disp_w)))
@@ -436,7 +430,6 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
                 x1 + 4, max(self.img_y0 + 8, y1 - 8),
                 text=f"Blur #{i+1}", fill=color, anchor="w", font=("Segoe UI", 8, "bold"), tags="overlay"
             )
-            # Bottom-right white resize handle
             self.screen.create_rectangle(
                 x2 - 6, y2 - 6, x2 + 6, y2 + 6, fill="#ffffff", outline=color, width=2, tags="overlay"
             )
@@ -576,7 +569,7 @@ class MovieRecapApp(tk.Tk):
         )
         self.btn_cancel.pack(side="right")
 
-        self.player = InteractiveLogoBlurPlayer(bottom)
+        self.player = InteractiveLogoBlurPlayer(bottom, on_download_click=self._start_process)
         self.player.pack(fill="x", pady=(4, 10))
 
         cap_header = ttk.Frame(bottom)
@@ -841,7 +834,7 @@ class MovieRecapApp(tk.Tk):
         self.s2_src.set("")
         self.log_box.delete("1.0", "end")
         self.s2_loc_lbl.config(text="Output File Location: (Refreshed - Ready for new Facebook URL or Video)")
-        self.log("🔄 Refreshed! Load a video and drag the green blur box onto the logo.")
+        self.log("🔄 Refreshed! Load a video, drag the green blur box onto the logo, and click 'Download Video'.")
 
     def _copy_fb_caption(self):
         txt = self.caption_box.get("1.0", "end").strip()
@@ -902,8 +895,7 @@ class MovieRecapApp(tk.Tk):
             if not self.s2_out_dir.get().strip():
                 self.s2_out_dir.set(os.path.dirname(p))
             try:
-                info = probe(p)
-                self.log(f"Selected video: {os.path.basename(p)} -> Drag the green box onto the logo, then click Process!")
+                self.log(f"Selected video: {os.path.basename(p)} -> Drag green box onto logo, then click 'Download Video'!")
                 self.player.load_video(p, autoplay=False)
             except Exception:
                 pass
@@ -1028,7 +1020,7 @@ class MovieRecapApp(tk.Tk):
                 base_name = os.path.splitext(os.path.basename(src))[0]
                 final_out = os.path.join(out_dir, f"{base_name}_FB_Safe.mp4")
 
-                self.log(f"🎯 Blurring {len(blur_boxes)} dragged logo box(es) + keeping all subtitles untouched...")
+                self.log(f"💾 Exporting video with {len(blur_boxes)} dragged logo blur box(es)...")
                 transform_video_policy_safe(
                     src, ass_path, final_out, info, target_size,
                     manual_blur_boxes=blur_boxes,
@@ -1044,7 +1036,7 @@ class MovieRecapApp(tk.Tk):
                 self.last_recap_file = final_out
                 self.set_progress(1.0)
                 self.after(0, lambda: self.s2_loc_lbl.config(text=f"✅ Downloaded & Saved in {elapsed:.0f}s: {final_out}"))
-                self.log(f"✅ DONE in {elapsed:.1f}s! Subtitles preserved & logo blurred.")
+                self.log(f"✅ DONE in {elapsed:.1f}s! Saved to: {final_out}")
                 self.after(0, lambda: self.player.load_video(final_out, autoplay=True))
 
             except Stopped:

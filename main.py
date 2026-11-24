@@ -13,7 +13,6 @@ from PIL import Image, ImageFilter, ImageTk
 from ffmpeg_helper import (
     Stopped,
     check_ffmpeg,
-    download_facebook_video,
     extract_preview_wav,
     probe,
     split_video_range,
@@ -113,13 +112,13 @@ class WinMCIPlayer:
 
 class InteractiveLogoBlurPlayer(ttk.Frame):
     """
-    Video Preview Player with Interactive Mouse Drag & Resize Rectangular Logo Blur Boxes
-    and a direct 'Download Video' button right beside the blur controls.
+    Video Preview Player with Mouse Drag & Resize Rectangular Logo Blur Boxes
+    and 'Generate & Download Video' button directly beside the blur controls.
     """
 
-    def __init__(self, parent, on_download_click=None):
+    def __init__(self, parent, on_generate_download=None):
         super().__init__(parent)
-        self.on_download_click = on_download_click
+        self.on_generate_download = on_generate_download
         self.video_path = ""
         self.preview_wav = ""
         self.cap = None
@@ -150,7 +149,7 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         header.pack(fill="x", pady=(4, 4))
         ttk.Label(
             header,
-            text="🎯 Drag & Resize Blur Box on Logo -> Click 'Download Video' when ready",
+            text="🎯 Drag Blur Box on Logo (စာတန်းထိုး မပျောက်ပါ) -> Click 'Generate & Download Video'",
             foreground="#60a5fa", font=("Segoe UI", 9, "bold")
         ).pack(side="left")
 
@@ -174,9 +173,9 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         ).pack(side="left", padx=(0, 8))
 
         tk.Button(
-            btn_tools, text="💾 Download Video", bg="#2563eb", fg="white",
+            btn_tools, text="🚀 Generate & Download Video", bg="#2563eb", fg="white",
             font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=3,
-            command=self._trigger_download
+            command=self._trigger_generate_download
         ).pack(side="left")
 
         self.screen = tk.Canvas(
@@ -186,7 +185,7 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.screen.pack(fill="x", pady=4)
         self.screen.create_text(
             self.canvas_w // 2, self.canvas_h // 2,
-            text="Browse a video or paste a Facebook URL above -> Drag & resize the green box onto the logo -> Click 'Download Video'",
+            text="1. Browse your downloaded video above -> 2. Drag & resize green box onto logo -> 3. Click 'Generate & Download Video'",
             fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
         )
 
@@ -230,9 +229,9 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.vol_lbl = ttk.Label(ctrl, text="100%", width=5, foreground="#34d399")
         self.vol_lbl.pack(side="left")
 
-    def _trigger_download(self):
-        if self.on_download_click:
-            self.on_download_click()
+    def _trigger_generate_download(self):
+        if self.on_generate_download:
+            self.on_generate_download()
 
     def add_blur_box(self):
         self.blur_boxes.append([0.04, 0.04, 0.22, 0.16])
@@ -343,7 +342,7 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
         self.screen.delete("all")
         self.screen.create_text(
             self.canvas_w // 2, self.canvas_h // 2,
-            text="Browse a video or paste a Facebook URL above -> Drag & resize the green box onto the logo -> Click 'Download Video'",
+            text="1. Browse your downloaded video above -> 2. Drag & resize green box onto logo -> 3. Click 'Generate & Download Video'",
             fill="#71717a", font=("Segoe UI", 10), tags="placeholder"
         )
 
@@ -502,8 +501,8 @@ class InteractiveLogoBlurPlayer(ttk.Frame):
 class MovieRecapApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Facebook Video Policy-Shield & Drag Logo Blur Studio")
-        self.geometry("1040x940")
+        self.title("Facebook Policy-Shield, Audio Changer & Drag Logo Blur Studio")
+        self.geometry("1040x920")
         self.configure(bg="#18181b")
         self.cancel_flag = False
         self.last_split_dir = ""
@@ -549,7 +548,7 @@ class MovieRecapApp(tk.Tk):
 
         self.tab2 = ttk.Frame(nb)
         self.tab1 = ttk.Frame(nb)
-        nb.add(self.tab2, text="  Step 1: Drag Logo Blur & FB Policy-Shield  ")
+        nb.add(self.tab2, text="  Step 1: Audio Change, Watermark & Drag Logo Blur  ")
         nb.add(self.tab1, text="  Step 2: Movie Splitter (ဇာတ်ကားပိုင်းရန်)  ")
 
         self._build_main_processor()
@@ -569,12 +568,12 @@ class MovieRecapApp(tk.Tk):
         )
         self.btn_cancel.pack(side="right")
 
-        self.player = InteractiveLogoBlurPlayer(bottom, on_download_click=self._start_process)
+        self.player = InteractiveLogoBlurPlayer(bottom, on_generate_download=self._start_process)
         self.player.pack(fill="x", pady=(4, 10))
 
         cap_header = ttk.Frame(bottom)
         cap_header.pack(fill="x", pady=(2, 4))
-        ttk.Label(cap_header, text="📢 Facebook Policy-Safe Caption & Hashtags (No Engagement Bait):", foreground="#38bdf8", font=("Segoe UI", 10, "bold")).pack(side="left")
+        ttk.Label(cap_header, text="📢 Facebook Policy-Safe Caption & Hashtags (No Inauthentic Engagement Bait):", foreground="#38bdf8", font=("Segoe UI", 10, "bold")).pack(side="left")
         tk.Button(
             cap_header, text="🔄 Next Caption", bg="#4b5563", fg="white",
             font=("Segoe UI", 8, "bold"), relief="flat", padx=10, pady=3, command=self._next_safe_caption
@@ -598,28 +597,21 @@ class MovieRecapApp(tk.Tk):
         )
         self.log_box.pack(fill="both", expand=True)
 
-    # ---------------- MAIN TAB ----------------
+    # ---------------- MAIN TAB (LOCAL FILE ONLY) ----------------
     def _build_main_processor(self):
         f = self.tab2
-        ttk.Label(f, text="1. Load FB URL or Video -> Drag Square Blur Box onto Logo -> Download Policy-Safe Video", style="Header.TLabel").pack(anchor="w", pady=(8, 10))
-
-        r_url = ttk.Frame(f)
-        r_url.pack(fill="x", pady=4)
-        ttk.Label(r_url, text="Facebook Video URL:", width=19).pack(side="left")
-        self.s2_url = tk.StringVar()
-        tk.Entry(r_url, textvariable=self.s2_url, bg="#27272a", fg="#38bdf8", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
-        tk.Button(r_url, text="📋 Paste URL", bg="#4f46e5", fg="white", font=("Segoe UI", 8, "bold"), relief="flat", padx=10, command=self._paste_url).pack(side="right")
+        ttk.Label(f, text="1. Select Downloaded Video -> Change Audio & Policy Shield -> Drag Blur Box on Logo -> Generate & Download", style="Header.TLabel").pack(anchor="w", pady=(8, 10))
 
         r1 = ttk.Frame(f)
         r1.pack(fill="x", pady=4)
-        ttk.Label(r1, text="OR Local Video File:", width=19).pack(side="left")
+        ttk.Label(r1, text="Downloaded Video File:", width=20).pack(side="left")
         self.s2_src = tk.StringVar()
         tk.Entry(r1, textvariable=self.s2_src, bg="#27272a", fg="white", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
-        tk.Button(r1, text="Browse Video", bg="#3f3f46", fg="white", relief="flat", padx=10, command=self._browse_split_file).pack(side="right")
+        tk.Button(r1, text="📂 Browse Video", bg="#4f46e5", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=12, command=self._browse_split_file).pack(side="right")
 
         r_out = ttk.Frame(f)
         r_out.pack(fill="x", pady=4)
-        ttk.Label(r_out, text="Download / Output Dir:", width=19).pack(side="left")
+        ttk.Label(r_out, text="Save / Output Folder:", width=20).pack(side="left")
         self.s2_out_dir = tk.StringVar()
         tk.Entry(r_out, textvariable=self.s2_out_dir, bg="#27272a", fg="white", insertbackground="white", relief="flat").pack(side="left", fill="x", expand=True, ipady=5, padx=6)
         tk.Button(r_out, text="Choose Folder", bg="#3f3f46", fg="white", relief="flat", padx=10, command=self._browse_recap_out).pack(side="right", padx=(0, 4))
@@ -627,7 +619,7 @@ class MovieRecapApp(tk.Tk):
 
         r3 = ttk.Frame(f)
         r3.pack(fill="x", pady=6)
-        ttk.Label(r3, text="Audio Protection:", width=19).pack(side="left")
+        ttk.Label(r3, text="Audio Copyright Shift:", width=20).pack(side="left")
         self.s2_audio_mode = tk.StringVar(value=list(AUDIO_MODES.keys())[0])
         ttk.Combobox(r3, textvariable=self.s2_audio_mode, values=list(AUDIO_MODES.keys()), state="readonly", width=44).pack(side="left", padx=(6, 12))
 
@@ -644,7 +636,7 @@ class MovieRecapApp(tk.Tk):
 
         r4 = ttk.Frame(f)
         r4.pack(fill="x", pady=6)
-        ttk.Label(r4, text="Output Size:", width=19).pack(side="left")
+        ttk.Label(r4, text="Output Size:", width=20).pack(side="left")
         self.s2_size = tk.StringVar(value=list(ASPECT_OPTIONS.keys())[0])
         ttk.Combobox(r4, textvariable=self.s2_size, values=list(ASPECT_OPTIONS.keys()), state="readonly", width=36).pack(side="left", padx=(6, 12))
 
@@ -654,7 +646,7 @@ class MovieRecapApp(tk.Tk):
 
         r_wm2 = ttk.Frame(f)
         r_wm2.pack(fill="x", pady=4)
-        ttk.Label(r_wm2, text="Watermark Motion:", width=19).pack(side="left")
+        ttk.Label(r_wm2, text="Watermark Motion:", width=20).pack(side="left")
         self.s2_wm_motion = tk.StringVar(value=WM_MOTIONS[0])
         ttk.Combobox(r_wm2, textvariable=self.s2_wm_motion, values=WM_MOTIONS, state="readonly", width=28).pack(side="left", padx=(6, 8))
 
@@ -683,9 +675,9 @@ class MovieRecapApp(tk.Tk):
         btn_row = ttk.Frame(f)
         btn_row.pack(anchor="w", pady=(2, 6))
         tk.Button(
-            btn_row, text="⚡ Process & Download Video (Apply Dragged Logo Blur + Policy Shield)",
+            btn_row, text="🚀 Generate & Download Video",
             bg="#2563eb", fg="white", font=("Segoe UI", 10, "bold"),
-            relief="flat", padx=18, pady=8, command=self._start_process
+            relief="flat", padx=20, pady=8, command=self._start_process
         ).pack(side="left", padx=(0, 10))
 
         tk.Button(
@@ -811,16 +803,6 @@ class MovieRecapApp(tk.Tk):
             pass
 
     # ---------------- ACTIONS ----------------
-    def _paste_url(self):
-        try:
-            clip = self.clipboard_get().strip()
-            if clip:
-                self.s2_url.set(clip)
-                self.s2_src.set("")
-                self.log(f"📋 Pasted URL: {clip}")
-        except Exception:
-            pass
-
     def _next_safe_caption(self):
         self.caption_idx = (self.caption_idx + 1) % len(SAFE_CAPTIONS)
         self.caption_box.delete("1.0", "end")
@@ -830,11 +812,10 @@ class MovieRecapApp(tk.Tk):
         self.cancel_flag = True
         self.player.reset_player()
         self.progress_var.set(0.0)
-        self.s2_url.set("")
         self.s2_src.set("")
         self.log_box.delete("1.0", "end")
-        self.s2_loc_lbl.config(text="Output File Location: (Refreshed - Ready for new Facebook URL or Video)")
-        self.log("🔄 Refreshed! Load a video, drag the green blur box onto the logo, and click 'Download Video'.")
+        self.s2_loc_lbl.config(text="Output File Location: (Refreshed - Ready for new video)")
+        self.log("🔄 Refreshed! Browse your downloaded video, drag the green box onto the logo, and click 'Generate & Download Video'.")
 
     def _copy_fb_caption(self):
         txt = self.caption_box.get("1.0", "end").strip()
@@ -887,15 +868,14 @@ class MovieRecapApp(tk.Tk):
             messagebox.showinfo("Folder", "Split folder မရှိသေးပါ။")
 
     def _browse_split_file(self):
-        init_dir = self.s1_out.get().strip() or os.getcwd()
+        init_dir = self.s1_out.get().strip() or os.path.expanduser("~")
         p = filedialog.askopenfilename(initialdir=init_dir, filetypes=[("Video Files", "*.mp4 *.mkv *.mov *.avi")])
         if p:
             self.s2_src.set(p)
-            self.s2_url.set("")
             if not self.s2_out_dir.get().strip():
                 self.s2_out_dir.set(os.path.dirname(p))
             try:
-                self.log(f"Selected video: {os.path.basename(p)} -> Drag green box onto logo, then click 'Download Video'!")
+                self.log(f"📂 Loaded: {os.path.basename(p)} -> Drag green blur box onto logo, then click 'Generate & Download Video'!")
                 self.player.load_video(p, autoplay=False)
             except Exception:
                 pass
@@ -968,18 +948,14 @@ class MovieRecapApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _start_process(self):
-        fb_url = self.s2_url.get().strip()
-        local_src = self.s2_src.get().strip()
-
-        if not fb_url and not os.path.isfile(local_src):
-            messagebox.showerror("Input Missing", "Facebook Video URL ထည့်ပါ (သို့မဟုတ်) Local Video File ရွေးပေးပါ။")
+        src = self.s2_src.get().strip()
+        if not os.path.isfile(src):
+            messagebox.showerror("Input Missing", "Download ဆွဲထားသော Video File ကို အရင်ရွေးပေးပါ။")
             return
 
         self.player.stop()
-        out_dir = self.s2_out_dir.get().strip()
-        if not out_dir:
-            out_dir = os.path.dirname(local_src) if os.path.isfile(local_src) else os.path.join(os.path.expanduser("~"), "Downloads", "FB_PolicySafe_Videos")
-            self.s2_out_dir.set(out_dir)
+        out_dir = self.s2_out_dir.get().strip() or os.path.dirname(src)
+        self.s2_out_dir.set(out_dir)
 
         blur_boxes = self.player.get_normalized_boxes()
         fb_shield = bool(self.s2_fb_shield.get())
@@ -991,7 +967,7 @@ class MovieRecapApp(tk.Tk):
         wm_text = self.s2_wm.get()
 
         self.cancel_flag = False
-        self.set_progress(0.05)
+        self.set_progress(0.08)
 
         def worker():
             try:
@@ -999,14 +975,6 @@ class MovieRecapApp(tk.Tk):
                 os.makedirs(out_dir, exist_ok=True)
                 workdir = tempfile.mkdtemp(prefix="fb_shield_")
 
-                if fb_url:
-                    src = download_facebook_video(fb_url, workdir, log=self.log)
-                    self.after(0, lambda: self.s2_src.set(src))
-                    self.after(0, lambda: self.s2_url.set(""))
-                else:
-                    src = local_src
-
-                self.set_progress(0.20)
                 info = probe(src)
                 in_dur = info["duration"]
 
@@ -1020,7 +988,7 @@ class MovieRecapApp(tk.Tk):
                 base_name = os.path.splitext(os.path.basename(src))[0]
                 final_out = os.path.join(out_dir, f"{base_name}_FB_Safe.mp4")
 
-                self.log(f"💾 Exporting video with {len(blur_boxes)} dragged logo blur box(es)...")
+                self.log(f"🚀 Generating & Downloading Policy-Safe Video (Logo Blur Boxes: {len(blur_boxes)}, Watermark: '{wm_text}')...")
                 transform_video_policy_safe(
                     src, ass_path, final_out, info, target_size,
                     manual_blur_boxes=blur_boxes,
@@ -1028,14 +996,14 @@ class MovieRecapApp(tk.Tk):
                     mirror_video=mirror_vid,
                     audio_pitch_shift=pitch_shift,
                     audio_volume_pct=audio_vol,
-                    on_progress=lambda p: self.set_progress(0.25 + p * 0.74),
+                    on_progress=lambda p: self.set_progress(0.10 + p * 0.89),
                     cancelled=lambda: self.cancel_flag,
                 )
 
                 elapsed = time.time() - t_start
                 self.last_recap_file = final_out
                 self.set_progress(1.0)
-                self.after(0, lambda: self.s2_loc_lbl.config(text=f"✅ Downloaded & Saved in {elapsed:.0f}s: {final_out}"))
+                self.after(0, lambda: self.s2_loc_lbl.config(text=f"✅ Generated & Saved in {elapsed:.0f}s: {final_out}"))
                 self.log(f"✅ DONE in {elapsed:.1f}s! Saved to: {final_out}")
                 self.after(0, lambda: self.player.load_video(final_out, autoplay=True))
 

@@ -112,66 +112,58 @@ def extract_preview_wav(video_path, out_wav):
     return out_wav
 
 
-def _fmt_ass_time(sec):
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    s = sec % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
-
-
 def write_watermark_ass(ass_path, width, height, duration_sec, watermark_text="", wm_pos="Top-Right", wm_motion="Diagonal Bounce (တစ်စောင်းပြေး)"):
-    wm_size = max(22, int(height * 0.032))
-    align_map = {
-        "Top-Left": 7,
-        "Top-Right": 9,
-        "Bottom-Left": 1,
-        "Bottom-Right": 3,
+    # Save watermark metadata as JSON so drawtext renders natively without libass fontconfig issues
+    meta = {
+        "text": watermark_text.replace("\n", " ").strip(),
+        "pos": wm_pos,
+        "motion": wm_motion,
+        "height": height,
     }
-    wm_align = align_map.get(wm_pos, 9)
+    with open(ass_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
 
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {width}
-PlayResY: {height}
-WrapStyle: 0
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Watermark,Segoe UI,{wm_size},&H55FFFFFF,&H000000FF,&H77000000,&H00000000,-1,0,0,0,100,100,1,0,1,2.0,0,{wm_align},24,24,20,1
+def _build_drawtext_filter(ass_path, th):
+    wm_text = "Daily News Mm"
+    wm_pos = "Top-Right"
+    wm_motion = "Diagonal"
+    try:
+        with open(ass_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+            wm_text = meta.get("text", "").strip()
+            wm_pos = meta.get("pos", "Top-Right")
+            wm_motion = meta.get("motion", "Diagonal")
+    except Exception:
+        pass
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    lines = [header]
-    wm_clean = watermark_text.replace("\n", " ").strip()
-    if wm_clean and duration_sec > 0:
-        cycle = 14.0
-        t = 0.0
-        step = 0
-        while t < duration_sec:
-            t_next = min(duration_sec + 0.5, t + cycle)
-            if "Vertical" in wm_motion:
-                x = int(width * 0.82) if "Right" in wm_pos else int(width * 0.18)
-                tag = f"{{\\an5\\move({x},{height - 40},{x},40)}}"
-                lines.append(f"Dialogue: 1,{_fmt_ass_time(t)},{_fmt_ass_time(t_next)},Watermark,,0,0,0,,{tag}{wm_clean}\n")
-            elif "Horizontal" in wm_motion:
-                y = int(height * 0.12) if "Top" in wm_pos else int(height * 0.88)
-                tag = f"{{\\an5\\move({width - 50},{y},50,{y})}}"
-                lines.append(f"Dialogue: 1,{_fmt_ass_time(t)},{_fmt_ass_time(t_next)},Watermark,,0,0,0,,{tag}{wm_clean}\n")
-            elif "Diagonal" in wm_motion:
-                if step % 2 == 0:
-                    tag = f"{{\\an5\\move(90,{height - 60},{width - 90},60)}}"
-                else:
-                    tag = f"{{\\an5\\move({width - 90},{height - 60},90,60)}}"
-                lines.append(f"Dialogue: 1,{_fmt_ass_time(t)},{_fmt_ass_time(t_next)},Watermark,,0,0,0,,{tag}{wm_clean}\n")
-            else:
-                lines.append(f"Dialogue: 1,0:00:00.00,{_fmt_ass_time(duration_sec + 1.0)},Watermark,,0,0,0,,{wm_clean}\n")
-                break
-            t += cycle
-            step += 1
+    if not wm_text:
+        return ""
 
-    with open(ass_path, "w", encoding="utf-8-sig") as f:
-        f.writelines(lines)
+    # Escape special characters for FFmpeg drawtext
+    safe_txt = wm_text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "")
+    font_size = max(18, int(th * 0.028))
+
+    win_font = "C\\:/Windows/Fonts/segoeui.ttf"
+    font_opt = f"fontfile='{win_font}':" if os.path.isfile("C:/Windows/Fonts/segoeui.ttf") else ""
+
+    if "Vertical" in wm_motion:
+        x_expr = "w-tw-24" if "Right" in wm_pos else "24"
+        y_expr = "h-th-mod(t*45\\,h-th-40)-20"
+    elif "Horizontal" in wm_motion:
+        x_expr = "w-tw-mod(t*60\\,w-tw-40)-20"
+        y_expr = "24" if "Top" in wm_pos else "h-th-24"
+    elif "Diagonal" in wm_motion:
+        x_expr = "20+abs(mod(t*55\\,2*(w-tw-40))-(w-tw-40))"
+        y_expr = "20+abs(mod(t*40\\,2*(h-th-40))-(h-th-40))"
+    else:
+        x_expr = "w-tw-24" if "Right" in wm_pos else "24"
+        y_expr = "24" if "Top" in wm_pos else "h-th-24"
+
+    return (
+        f",drawtext={font_opt}text='{safe_txt}':fontsize={font_size}:"
+        f"fontcolor=white@0.45:borderw=1.5:bordercolor=black@0.45:x={x_expr}:y={y_expr}"
+    )
 
 
 def transform_video_policy_safe(
@@ -188,21 +180,19 @@ def transform_video_policy_safe(
     sw, sh = info["width"], info["height"]
     has_audio = info.get("has_audio", True)
     total_dur = max(0.5, info["duration"])
-    escaped_ass = ass_path.replace("\\", "/").replace(":", "\\:")
 
-    v_steps = []
+    v_steps = ["format=yuv420p"]
 
     if manual_blur_boxes:
         for idx, (nx1, ny1, nx2, ny2) in enumerate(manual_blur_boxes):
-            x = max(0, min(sw - 12, int(round(nx1 * sw))))
-            y = max(0, min(sh - 12, int(round(ny1 * sh))))
-            bw = max(12, min(sw - x, int(round((nx2 - nx1) * sw))))
-            bh = max(12, min(sh - y, int(round((ny2 - ny1) * sh))))
-            # Clamp boxblur radius to < half of crop width/height to prevent FFmpeg Invalid argument
-            safe_rad = max(2, min(16, (bw - 2) // 2, (bh - 2) // 2))
+            x = max(0, min(sw - 16, int(round(nx1 * sw)) // 2 * 2))
+            y = max(0, min(sh - 16, int(round(ny1 * sh)) // 2 * 2))
+            bw = max(16, min(sw - x, int(round((nx2 - nx1) * sw)) // 2 * 2))
+            bh = max(16, min(sh - y, int(round((ny2 - ny1) * sh)) // 2 * 2))
+            # gblur never throws Invalid argument on small boxes
             v_steps.append(
                 f"split[base_{idx}][crop_{idx}];"
-                f"[crop_{idx}]crop={bw}:{bh}:{x}:{y},boxblur={safe_rad}:2[blur_{idx}];"
+                f"[crop_{idx}]crop={bw}:{bh}:{x}:{y},gblur=sigma=12[blur_{idx}];"
                 f"[base_{idx}][blur_{idx}]overlay={x}:{y}"
             )
 
@@ -212,6 +202,7 @@ def transform_video_policy_safe(
     speed_factor = 1.02 if fb_shield else 1.0
     v_steps.append(f"setpts=PTS/{speed_factor:.4f}")
     prefix = ",".join(v_steps) + ","
+    wm_filter = _build_drawtext_filter(ass_path, th)
 
     if fb_shield:
         fw = max(16, int((tw * 0.90) // 2 * 2))
@@ -220,18 +211,18 @@ def transform_video_policy_safe(
             f"[0:v]{prefix}"
             f"eq=contrast=1.04:saturation=1.07:brightness=0.01,"
             f"split[bg][fg];"
-            f"[bg]scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th},boxblur=16:2[bg_blur];"
+            f"[bg]scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th},gblur=sigma=18[bg_blur];"
             f"[fg]crop=iw*0.95:ih*0.95:iw*0.025:ih*0.025,"
             f"scale={fw}:{fh}:force_original_aspect_ratio=decrease:flags=fast_bilinear[fg_scaled];"
-            f"[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2,"
-            f"ass='{escaped_ass}',format=yuv420p[vout]"
+            f"[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2"
+            f"{wm_filter},format=yuv420p[vout]"
         )
     else:
         vf = (
             f"[0:v]{prefix}"
             f"scale={tw}:{th}:force_original_aspect_ratio=decrease:flags=fast_bilinear,"
-            f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:black,"
-            f"ass='{escaped_ass}',format=yuv420p[vout]"
+            f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:black"
+            f"{wm_filter},format=yuv420p[vout]"
         )
 
     vol_gain = round(max(0.5, audio_volume_pct / 100.0), 2)
@@ -256,7 +247,7 @@ def transform_video_policy_safe(
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
         "-map_metadata", "-1",
-        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode", "-crf", "22", "-threads", "0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads", "0",
         "-c:a", "aac", "-b:a", bitrate,
         "-shortest", "-movflags", "+faststart",
         out_path,
@@ -282,6 +273,6 @@ def transform_video_policy_safe(
             p.kill()
 
     if p.returncode != 0:
-        err_msg = p.stderr.read().decode("utf-8", "replace")[-450:]
+        err_msg = p.stderr.read().decode("utf-8", "replace")[-500:]
         raise IOError("Video ထုတ်ရာတွင် Error တက်ပါသည်: " + err_msg)
     return out_path

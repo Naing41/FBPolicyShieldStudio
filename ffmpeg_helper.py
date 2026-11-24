@@ -3,8 +3,6 @@ import os
 import subprocess
 import sys
 
-import yt_dlp
-
 NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -40,41 +38,6 @@ def check_ffmpeg():
         return _run([FFMPEG, "-version"]).returncode == 0
     except OSError:
         return False
-
-
-def download_facebook_video(url, out_dir, log=None):
-    """Downloads a Facebook Video / Reels URL in best MP4 quality using yt-dlp."""
-    os.makedirs(out_dir, exist_ok=True)
-    if log:
-        log(f"⬇ Downloading Facebook Video from URL: {url}")
-
-    ffmpeg_dir = os.path.dirname(FFMPEG) if os.path.isfile(FFMPEG) else None
-    out_tmpl = os.path.join(out_dir, "fb_download_%(id)s.%(ext)s")
-
-    ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": out_tmpl,
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
-    if ffmpeg_dir:
-        ydl_opts["ffmpeg_location"] = ffmpeg_dir
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        base, _ = os.path.splitext(filename)
-        mp4_path = base + ".mp4"
-        final_file = mp4_path if os.path.isfile(mp4_path) else filename
-
-    if not os.path.isfile(final_file):
-        raise IOError("Facebook ဗီဒီယို Download ဆွဲမရပါ။ Link မှန်/မမှန် ပြန်စစ်ပေးပါ။")
-
-    if log:
-        log(f"✅ Downloaded FB Video: {final_file}")
-    return final_file
 
 
 def probe(path):
@@ -212,11 +175,6 @@ def transform_video_policy_safe(
     audio_volume_pct=135,
     on_progress=None, cancelled=None, bitrate="192k"
 ):
-    """
-    Applies ONLY the user-dragged rectangular blur box(es) over small logos while keeping
-    all original subtitles 100% untouched and crisp.
-    `manual_blur_boxes` is a list of normalized (x1, y1, x2, y2) floats in [0.0, 1.0].
-    """
     tw, th = target_size
     sw, sh = info["width"], info["height"]
     total_dur = max(0.5, info["duration"])
@@ -230,7 +188,6 @@ def transform_video_policy_safe(
             y = max(0, min(sh - 8, int(round(ny1 * sh))))
             bw = max(8, min(sw - x, int(round((nx2 - nx1) * sw))))
             bh = max(8, min(sh - y, int(round((ny2 - ny1) * sh))))
-            # Smooth rectangular boxblur covering only the user's dragged logo region
             v_steps.append(
                 f"split[base_{idx}][crop_{idx}];"
                 f"[crop_{idx}]crop={bw}:{bh}:{x}:{y},boxblur=18:3[blur_{idx}];"
